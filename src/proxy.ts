@@ -10,10 +10,9 @@
  *        → gets 402 → @x402/fetch signs payment → retries
  *        → streams response back to pi-ai
  *
- * Streaming works because x402 is a gated API:
- *   verify payment → grant access → stream response → settle
- *   The 402→sign→retry happens on the initial request; once accepted,
- *   the response streams normally through the proxy.
+ * Phase 2 additions:
+ *   - Smart routing: when model is "blockrun/auto", classify query and pick cheapest model
+ *   - Usage logging: log every request as JSON line to ~/.openclaw/blockrun/logs/
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -21,16 +20,22 @@ import type { AddressInfo } from "node:net";
 import { privateKeyToAccount } from "viem/accounts";
 import { toClientEvmSigner, ExactEvmScheme } from "@x402/evm";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
+import { route, getFallbackChain, DEFAULT_ROUTING_CONFIG, type RouterOptions, type RoutingDecision, type RoutingConfig, type ModelPricing } from "./router/index.js";
+import { BLOCKRUN_MODELS } from "./models.js";
+import { logUsage, type UsageEntry } from "./logger.js";
 
 const BLOCKRUN_API = "https://api.blockrun.ai/api";
+const AUTO_MODEL = "blockrun/auto";
 
 export type ProxyOptions = {
   walletKey: string;
   apiBase?: string;
   port?: number;
+  routingConfig?: Partial<RoutingConfig>;
   onReady?: (port: number) => void;
   onError?: (error: Error) => void;
   onPayment?: (info: { model: string; amount: string; network: string }) => void;
+  onRouted?: (decision: RoutingDecision) => void;
 };
 
 export type ProxyHandle = {
@@ -38,6 +43,33 @@ export type ProxyHandle = {
   baseUrl: string;
   close: () => Promise<void>;
 };
+
+/**
+ * Build model pricing map from BLOCKRUN_MODELS.
+ */
+function buildModelPricing(): Map<string, ModelPricing> {
+  const map = new Map<string, ModelPricing>();
+  for (const m of BLOCKRUN_MODELS) {
+    if (m.id === AUTO_MODEL) continue; // skip meta-model
+    map.set(m.id, { inputPrice: m.inputPrice, outputPrice: m.outputPrice });
+  }
+  return map;
+}
+
+/**
+ * Merge partial routing config overrides with defaults.
+ */
+function mergeRoutingConfig(overrides?: Partial<RoutingConfig>): RoutingConfig {
+  if (!overrides) return DEFAULT_ROUTING_CONFIG;
+  return {
+    ...DEFAULT_ROUTING_CONFIG,
+    ...overrides,
+    classifier: { ...DEFAULT_ROUTING_CONFIG.classifier, ...overrides.classifier },
+    scoring: { ...DEFAULT_ROUTING_CONFIG.scoring, ...overrides.scoring },
+    tiers: { ...DEFAULT_ROUTING_CONFIG.tiers, ...overrides.tiers },
+    overrides: { ...DEFAULT_ROUTING_CONFIG.overrides, ...overrides.overrides },
+  };
+}
 
 /**
  * Start the local x402 proxy server.
@@ -53,6 +85,16 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const signer = toClientEvmSigner(account);
   const client = new x402Client().register("eip155:8453", new ExactEvmScheme(signer));
   const payFetch = wrapFetchWithPayment(fetch, client);
+
+  // Build router options
+  const routingConfig = mergeRoutingConfig(options.routingConfig);
+  const modelPricing = buildModelPricing();
+  const routerOpts: RouterOptions = {
+    config: routingConfig,
+    modelPricing,
+    payFetch,
+    apiBase,
+  };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Health check
@@ -70,7 +112,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     }
 
     try {
-      await proxyRequest(req, res, apiBase, payFetch, options);
+      await proxyRequest(req, res, apiBase, payFetch, options, routerOpts);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       options.onError?.(error);
@@ -111,6 +153,9 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
 
 /**
  * Proxy a single request through x402 payment flow to BlockRun API.
+ *
+ * When model is "blockrun/auto", runs the smart router to pick the
+ * cheapest capable model before forwarding.
  */
 async function proxyRequest(
   req: IncomingMessage,
@@ -118,7 +163,10 @@ async function proxyRequest(
   apiBase: string,
   payFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   options: ProxyOptions,
+  routerOpts: RouterOptions,
 ): Promise<void> {
+  const startTime = Date.now();
+
   // Build upstream URL: /v1/chat/completions → https://api.blockrun.ai/api/v1/chat/completions
   const upstreamUrl = `${apiBase}${req.url}`;
 
@@ -127,7 +175,43 @@ async function proxyRequest(
   for await (const chunk of req) {
     bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  const body = Buffer.concat(bodyChunks);
+  let body = Buffer.concat(bodyChunks);
+
+  // --- Smart routing ---
+  let routingDecision: RoutingDecision | undefined;
+  const isChatCompletion = req.url?.includes("/chat/completions");
+
+  if (isChatCompletion && body.length > 0) {
+    try {
+      const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+
+      if (parsed.model === AUTO_MODEL) {
+        // Extract prompt from messages
+        type ChatMessage = { role: string; content: string };
+        const messages = parsed.messages as ChatMessage[] | undefined;
+        let lastUserMsg: ChatMessage | undefined;
+        if (messages) {
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "user") { lastUserMsg = messages[i]; break; }
+          }
+        }
+        const systemMsg = messages?.find((m: ChatMessage) => m.role === "system");
+        const prompt = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
+        const systemPrompt = typeof systemMsg?.content === "string" ? systemMsg.content : undefined;
+        const maxTokens = (parsed.max_tokens as number) || 4096;
+
+        routingDecision = await route(prompt, systemPrompt, maxTokens, routerOpts);
+
+        // Replace model in body
+        parsed.model = routingDecision.model;
+        body = Buffer.from(JSON.stringify(parsed));
+
+        options.onRouted?.(routingDecision);
+      }
+    } catch {
+      // JSON parse error — forward body as-is
+    }
+  }
 
   // Forward headers, stripping host and connection
   const headers: Record<string, string> = {};
@@ -175,4 +259,24 @@ async function proxyRequest(
   }
 
   res.end();
+
+  // --- Usage logging (fire-and-forget) ---
+  if (routingDecision) {
+    const latencyMs = Date.now() - startTime;
+    const entry: UsageEntry = {
+      timestamp: new Date().toISOString(),
+      model: routingDecision.model,
+      tier: routingDecision.tier,
+      method: routingDecision.method,
+      confidence: routingDecision.confidence,
+      estimatedInputTokens: Math.ceil(body.length / 4),
+      maxOutputTokens: 4096,
+      costEstimate: routingDecision.costEstimate,
+      baselineCost: routingDecision.baselineCost,
+      savings: routingDecision.savings,
+      latencyMs,
+      reasoning: routingDecision.reasoning,
+    };
+    logUsage(entry).catch(() => {});
+  }
 }

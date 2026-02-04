@@ -21,7 +21,11 @@ type BlockRunModel = {
   vision?: boolean;
 };
 
-const BLOCKRUN_MODELS: BlockRunModel[] = [
+export const BLOCKRUN_MODELS: BlockRunModel[] = [
+  // Smart routing meta-model — proxy replaces with actual model
+  { id: "blockrun/auto", name: "BlockRun Smart Router", inputPrice: 0, outputPrice: 0, contextWindow: 1_050_000, maxOutput: 128_000 },
+
+
   // OpenAI GPT-5 Family
   { id: "openai/gpt-5.2", name: "GPT-5.2", inputPrice: 1.75, outputPrice: 14.0, contextWindow: 400000, maxOutput: 128000, reasoning: true, vision: true },
   { id: "openai/gpt-5-mini", name: "GPT-5 Mini", inputPrice: 0.25, outputPrice: 2.0, contextWindow: 200000, maxOutput: 65536 },
