@@ -15,16 +15,8 @@ import { homedir } from "node:os";
 export type UsageEntry = {
   timestamp: string;
   model: string;
-  tier: string;
-  method: string;
-  confidence: number;
-  estimatedInputTokens: number;
-  maxOutputTokens: number;
-  costEstimate: number;
-  baselineCost: number;
-  savings: number;
+  cost: number;
   latencyMs: number;
-  reasoning: string;
 };
 
 const LOG_DIR = join(homedir(), ".openclaw", "blockrun", "logs");

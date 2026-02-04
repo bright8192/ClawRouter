@@ -155,17 +155,7 @@ Every routed request is logged as a JSON line:
 ```
 
 ```json
-{
-  "timestamp": "2026-02-03T20:15:30.123Z",
-  "model": "google/gemini-2.5-flash",
-  "tier": "SIMPLE",
-  "method": "rules",
-  "confidence": 0.9,
-  "costEstimate": 0.000246,
-  "baselineCost": 0.004097,
-  "savings": 0.94,
-  "latencyMs": 1250
-}
+{"timestamp":"2026-02-03T20:15:30.123Z","model":"google/gemini-2.5-flash","cost":0.000246,"latencyMs":1250}
 ```
 
 ## Configuration

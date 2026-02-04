@@ -265,20 +265,11 @@ async function proxyRequest(
 
   // --- Usage logging (fire-and-forget) ---
   if (routingDecision) {
-    const latencyMs = Date.now() - startTime;
     const entry: UsageEntry = {
       timestamp: new Date().toISOString(),
       model: routingDecision.model,
-      tier: routingDecision.tier,
-      method: routingDecision.method,
-      confidence: routingDecision.confidence,
-      estimatedInputTokens: Math.ceil(body.length / 4),
-      maxOutputTokens: 4096,
-      costEstimate: routingDecision.costEstimate,
-      baselineCost: routingDecision.baselineCost,
-      savings: routingDecision.savings,
-      latencyMs,
-      reasoning: routingDecision.reasoning,
+      cost: routingDecision.costEstimate,
+      latencyMs: Date.now() - startTime,
     };
     logUsage(entry).catch(() => {});
   }

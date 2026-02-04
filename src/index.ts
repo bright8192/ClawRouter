@@ -70,13 +70,9 @@ const plugin: OpenClawPluginDefinition = {
           api.logger.error(`BlockRun proxy error: ${error.message}`);
         },
         onRouted: (decision) => {
-          const savingsPct = (decision.savings * 100).toFixed(1);
           const cost = decision.costEstimate.toFixed(4);
-          const baseline = decision.baselineCost.toFixed(4);
-          api.logger.info(
-            `[routing] ${decision.model} (${decision.tier}, ${decision.method}, confidence=${decision.confidence.toFixed(2)}) ` +
-            `cost=$${cost} baseline=$${baseline} saved=${savingsPct}%`,
-          );
+          const saved = (decision.savings * 100).toFixed(0);
+          api.logger.info(`${decision.model} $${cost} (saved ${saved}%)`);
         },
       });
 
