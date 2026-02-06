@@ -56,6 +56,7 @@ openclaw restart
 Every request now routes through BlockRun with x402 micropayments.
 
 **To enable smart routing**, add to `~/.openclaw/openclaw.json`:
+
 ```json
 {
   "agents": {
@@ -396,6 +397,7 @@ curl http://localhost:8402/health
 **Cause:** Wallet has no USDC balance.
 
 **Fix:**
+
 1. Find your wallet address (printed during install, or check `~/.openclaw/blockrun/wallet.key`)
 2. Send USDC on **Base network** to that address
 3. $1-5 is enough for hundreds of requests
