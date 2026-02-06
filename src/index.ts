@@ -23,6 +23,7 @@ import { startProxy } from "./proxy.js";
 import { resolveOrGenerateWalletKey } from "./auth.js";
 import type { RoutingConfig } from "./router/index.js";
 import { BalanceMonitor } from "./balance.js";
+import { OPENCLAW_MODELS } from "./models.js";
 
 /**
  * Start the x402 proxy in the background.
@@ -102,6 +103,21 @@ const plugin: OpenClawPluginDefinition = {
   register(api: OpenClawPluginApi) {
     // Register BlockRun as a provider (sync — available immediately)
     api.registerProvider(blockrunProvider);
+
+    // Inject models config so OpenClaw recognizes blockrun/* models
+    // This is required because registerProvider() alone doesn't add models to config
+    if (!api.config.models) {
+      api.config.models = { providers: {} };
+    }
+    if (!api.config.models.providers) {
+      api.config.models.providers = {};
+    }
+    api.config.models.providers.blockrun = {
+      baseUrl: "http://127.0.0.1:8402/v1",
+      api: "openai-completions",
+      models: OPENCLAW_MODELS,
+    };
+
     api.logger.info("BlockRun provider registered (30+ models via x402)");
 
     // Start x402 proxy in background (fire-and-forget)
