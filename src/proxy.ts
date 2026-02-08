@@ -145,6 +145,53 @@ function isProviderError(status: number, body: string): boolean {
   return PROVIDER_ERROR_PATTERNS.some((pattern) => pattern.test(body));
 }
 
+/**
+ * Normalize messages for Google models.
+ * Google's Gemini API requires the first non-system message to be from "user".
+ * If conversation starts with "assistant"/"model", prepend a placeholder user message.
+ */
+type ChatMessage = { role: string; content: string | unknown };
+
+function normalizeMessagesForGoogle(messages: ChatMessage[]): ChatMessage[] {
+  if (!messages || messages.length === 0) return messages;
+
+  // Find first non-system message
+  let firstNonSystemIdx = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role !== "system") {
+      firstNonSystemIdx = i;
+      break;
+    }
+  }
+
+  // If no non-system messages, return as-is
+  if (firstNonSystemIdx === -1) return messages;
+
+  const firstRole = messages[firstNonSystemIdx].role;
+
+  // If first non-system message is already "user", no change needed
+  if (firstRole === "user") return messages;
+
+  // If first non-system message is "assistant" or "model", prepend a user message
+  if (firstRole === "assistant" || firstRole === "model") {
+    const normalized = [...messages];
+    normalized.splice(firstNonSystemIdx, 0, {
+      role: "user",
+      content: "(continuing conversation)",
+    });
+    return normalized;
+  }
+
+  return messages;
+}
+
+/**
+ * Check if a model is a Google model that requires message normalization.
+ */
+function isGoogleModel(modelId: string): boolean {
+  return modelId.startsWith("google/") || modelId.startsWith("gemini");
+}
+
 // Kimi/Moonshot models use special Unicode tokens for thinking boundaries.
 // Pattern: <｜begin▁of▁thinking｜>content<｜end▁of▁thinking｜>
 // The ｜ is fullwidth vertical bar (U+FF5C), ▁ is lower one-eighth block (U+2581).
@@ -276,10 +323,44 @@ function estimateAmount(
 /**
  * Start the local x402 proxy server.
  *
+ * If a proxy is already running on the target port, reuses it instead of failing.
+ * Port can be configured via BLOCKRUN_PROXY_PORT environment variable.
+ *
  * Returns a handle with the assigned port, base URL, and a close function.
  */
 export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const apiBase = options.apiBase ?? BLOCKRUN_API;
+
+  // Determine port: options.port > env var > default
+  const listenPort = options.port ?? getProxyPort();
+
+  // Check if a proxy is already running on this port
+  const existingWallet = await checkExistingProxy(listenPort);
+  if (existingWallet) {
+    // Proxy already running — reuse it instead of failing with EADDRINUSE
+    const account = privateKeyToAccount(options.walletKey as `0x${string}`);
+    const balanceMonitor = new BalanceMonitor(account.address);
+    const baseUrl = `http://127.0.0.1:${listenPort}`;
+
+    // Verify the existing proxy is using the same wallet (or warn if different)
+    if (existingWallet !== account.address) {
+      console.warn(
+        `[ClawRouter] Existing proxy on port ${listenPort} uses wallet ${existingWallet}, but current config uses ${account.address}. Reusing existing proxy.`,
+      );
+    }
+
+    options.onReady?.(listenPort);
+
+    return {
+      port: listenPort,
+      baseUrl,
+      walletAddress: existingWallet,
+      balanceMonitor,
+      close: async () => {
+        // No-op: we didn't start this proxy, so we shouldn't close it
+      },
+    };
+  }
 
   // Create x402 payment-enabled fetch from wallet private key
   const account = privateKeyToAccount(options.walletKey as `0x${string}`);
@@ -366,9 +447,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     }
   });
 
-  // Listen on requested port (default: 8402)
-  const listenPort = options.port ?? DEFAULT_PORT;
-
+  // Listen on configured port (already determined above)
   return new Promise<ProxyHandle>((resolve, reject) => {
     server.on("error", reject);
 
@@ -421,11 +500,17 @@ async function tryModelRequest(
   balanceMonitor: BalanceMonitor,
   signal: AbortSignal,
 ): Promise<ModelRequestResult> {
-  // Update model in body
+  // Update model in body and normalize messages for Google models
   let requestBody = body;
   try {
     const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
     parsed.model = modelId;
+
+    // Normalize messages for Google models (first non-system message must be "user")
+    if (isGoogleModel(modelId) && Array.isArray(parsed.messages)) {
+      parsed.messages = normalizeMessagesForGoogle(parsed.messages as ChatMessage[]);
+    }
+
     requestBody = Buffer.from(JSON.stringify(parsed));
   } catch {
     // If body isn't valid JSON, use as-is

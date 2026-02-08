@@ -12,7 +12,7 @@ One wallet, 30+ models, zero API keys.
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://typescriptlang.org)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](https://nodejs.org)
 
-[Docs](https://blockrun.ai/docs) &middot; [Models](https://blockrun.ai/models) &middot; [Telegram](https://t.me/blockrunAI) &middot; [X](https://x.com/BlockRunAI)
+[Docs](https://blockrun.ai/docs) &middot; [Models](https://blockrun.ai/models) &middot; [Configuration](docs/configuration.md) &middot; [Architecture](docs/architecture.md) &middot; [Telegram](https://t.me/blockrunAI) &middot; [X](https://x.com/BlockRunAI)
 
 </div>
 
@@ -283,35 +283,31 @@ If you explicitly want to use a different wallet:
 
 Routing is **client-side** — open source and inspectable.
 
-### Source Structure
-
-```
-src/
-├── index.ts          # Plugin entry point
-├── provider.ts       # OpenClaw provider registration
-├── proxy.ts          # Local HTTP proxy + x402 payment
-├── models.ts         # 30+ model definitions with pricing
-├── auth.ts           # Wallet key resolution
-├── logger.ts         # JSON usage logging
-├── dedup.ts          # Response deduplication (prevents double-charge)
-├── payment-cache.ts  # Pre-auth optimization (skips 402 round trip)
-├── x402.ts           # EIP-712 USDC payment signing
-└── router/
-    ├── index.ts      # route() entry point
-    ├── rules.ts      # 14-dimension weighted scoring
-    ├── selector.ts   # Tier → model selection
-    ├── config.ts     # Default routing config
-    └── types.ts      # TypeScript types
-```
+**Deep dive:** [docs/architecture.md](docs/architecture.md) — request flow, payment system, optimizations
 
 ---
 
 ## Configuration
 
-### Override Tier Models
+For basic usage, no configuration is needed. For advanced options:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `BLOCKRUN_PROXY_PORT` | `8402` | Proxy port (env var) |
+| `BLOCKRUN_WALLET_KEY` | auto | Wallet private key (env var) |
+| `routing.tiers` | see docs | Override tier→model mappings |
+| `routing.scoring` | see docs | Custom keyword weights |
+
+**Quick example:**
+
+```bash
+# Use different port
+export BLOCKRUN_PROXY_PORT=8403
+openclaw gateway restart
+```
 
 ```yaml
-# openclaw.yaml
+# openclaw.yaml — override models
 plugins:
   - id: "@blockrun/clawrouter"
     config:
@@ -319,18 +315,9 @@ plugins:
         tiers:
           COMPLEX:
             primary: "openai/gpt-4o"
-          SIMPLE:
-            primary: "google/gemini-2.5-flash"
 ```
 
-### Override Scoring Weights
-
-```yaml
-routing:
-  scoring:
-    reasoningKeywords: ["proof", "theorem", "formal verification"]
-    codeKeywords: ["function", "class", "async", "await"]
-```
+**Full reference:** [docs/configuration.md](docs/configuration.md)
 
 ---
 
@@ -477,6 +464,18 @@ OpenClaw's security scanner may flag ClawRouter with:
 See [`openclaw.security.json`](openclaw.security.json) for detailed security documentation.
 
 ### Port 8402 already in use
+
+As of v0.4.1, ClawRouter automatically detects and reuses an existing proxy on the configured port instead of failing with `EADDRINUSE`. You should no longer see this error.
+
+If you need to use a different port:
+
+```bash
+# Set custom port via environment variable
+export BLOCKRUN_PROXY_PORT=8403
+openclaw gateway restart
+```
+
+To manually check/kill the process:
 
 ```bash
 lsof -i :8402

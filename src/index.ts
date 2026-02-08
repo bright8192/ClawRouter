@@ -19,7 +19,7 @@
 
 import type { OpenClawPluginDefinition, OpenClawPluginApi } from "./types.js";
 import { blockrunProvider, setActiveProxy } from "./provider.js";
-import { startProxy } from "./proxy.js";
+import { startProxy, getProxyPort } from "./proxy.js";
 import { resolveOrGenerateWalletKey } from "./auth.js";
 import type { RoutingConfig } from "./router/index.js";
 import { BalanceMonitor } from "./balance.js";
@@ -63,12 +63,19 @@ function injectModelsConfig(logger: { info: (msg: string) => void }): void {
     if (!config.models) config.models = {};
     if (!config.models.providers) config.models.providers = {};
 
+    const proxyPort = getProxyPort();
+    const expectedBaseUrl = `http://127.0.0.1:${proxyPort}/v1`;
+
     if (!config.models.providers.blockrun) {
       config.models.providers.blockrun = {
-        baseUrl: "http://127.0.0.1:8402/v1",
+        baseUrl: expectedBaseUrl,
         api: "openai-completions",
         models: OPENCLAW_MODELS,
       };
+      needsWrite = true;
+    } else if (config.models.providers.blockrun.baseUrl !== expectedBaseUrl) {
+      // Update baseUrl if port changed via env var
+      config.models.providers.blockrun.baseUrl = expectedBaseUrl;
       needsWrite = true;
     }
 
@@ -282,6 +289,7 @@ const plugin: OpenClawPluginDefinition = {
     injectAuthProfile(api.logger);
 
     // Also set runtime config for immediate availability
+    const runtimePort = getProxyPort();
     if (!api.config.models) {
       api.config.models = { providers: {} };
     }
@@ -289,7 +297,7 @@ const plugin: OpenClawPluginDefinition = {
       api.config.models.providers = {};
     }
     api.config.models.providers.blockrun = {
-      baseUrl: "http://127.0.0.1:8402/v1",
+      baseUrl: `http://127.0.0.1:${runtimePort}/v1`,
       api: "openai-completions",
       models: OPENCLAW_MODELS,
     };
@@ -340,7 +348,7 @@ const plugin: OpenClawPluginDefinition = {
 export default plugin;
 
 // Re-export for programmatic use
-export { startProxy } from "./proxy.js";
+export { startProxy, getProxyPort } from "./proxy.js";
 export type { ProxyOptions, ProxyHandle, LowBalanceInfo, InsufficientFundsInfo } from "./proxy.js";
 export { blockrunProvider } from "./provider.js";
 export { OPENCLAW_MODELS, BLOCKRUN_MODELS, buildProviderModels } from "./models.js";
