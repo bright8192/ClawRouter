@@ -751,7 +751,24 @@ async function proxyRequest(
           const prompt = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
           const systemPrompt = typeof systemMsg?.content === "string" ? systemMsg.content : undefined;
 
-          routingDecision = route(prompt, systemPrompt, maxTokens, routerOpts);
+          // Detect tool requests - force agentic mode for better tool-use models
+          const tools = parsed.tools as unknown[] | undefined;
+          const hasTools = Array.isArray(tools) && tools.length > 0;
+          const effectiveRouterOpts = hasTools
+            ? {
+                ...routerOpts,
+                config: {
+                  ...routerOpts.config,
+                  overrides: { ...routerOpts.config.overrides, agenticMode: true },
+                },
+              }
+            : routerOpts;
+
+          if (hasTools) {
+            console.log(`[ClawRouter] Tools detected (${tools.length}), forcing agentic mode`);
+          }
+
+          routingDecision = route(prompt, systemPrompt, maxTokens, effectiveRouterOpts);
 
           // Replace model in body
           parsed.model = routingDecision.model;
