@@ -7,21 +7,25 @@ This guide explains how to use your existing LLM subscriptions (Claude Pro/Max, 
 After careful consideration, we decided **not** to integrate subscription support directly into ClawRouter for several important reasons:
 
 ### 1. Terms of Service Compliance
+
 - Most subscription ToS (Claude Code, ChatGPT Plus) are designed for personal use
 - Using them through a proxy/API service may violate provider agreements
 - We want to keep ClawRouter compliant and low-risk for all users
 
 ### 2. Security & Privacy
+
 - Integrating subscriptions would require ClawRouter to access your credentials/sessions
 - Spawning external processes (like Claude CLI) introduces security concerns
 - Better to keep authentication at the OpenClaw layer where you control it
 
 ### 3. Maintenance & Flexibility
+
 - Each subscription provider has different APIs, CLIs, and authentication methods
 - OpenClaw already has a robust provider system that handles this
 - Duplicating this in ClawRouter would increase complexity without added value
 
 ### 4. Better Architecture
+
 - OpenClaw's native failover mechanism is more flexible and powerful
 - Works with **any** provider (not just Claude)
 - Zero code changes needed in ClawRouter
@@ -50,6 +54,7 @@ Response returned to user
 ```
 
 **Key benefits:**
+
 - ✅ Automatic failover (no manual intervention)
 - ✅ Works with any subscription provider OpenClaw supports
 - ✅ Respects provider ToS (you configure authentication directly)
@@ -60,6 +65,7 @@ Response returned to user
 ### Prerequisites
 
 1. **OpenClaw Gateway installed** with ClawRouter plugin
+
    ```bash
    npm install -g openclaw
    openclaw plugins install @blockrun/clawrouter
@@ -108,6 +114,7 @@ openclaw models show
 ```
 
 Expected output:
+
 ```
 Primary: anthropic/claude-sonnet-4-5
 Fallbacks:
@@ -151,10 +158,7 @@ Edit `~/.openclaw/openclaw.json`:
     "coding": {
       "model": {
         "primary": "anthropic/claude-sonnet-4-5",
-        "fallbacks": [
-          "blockrun/google/gemini-2.5-pro",
-          "blockrun/deepseek/deepseek-chat"
-        ]
+        "fallbacks": ["blockrun/google/gemini-2.5-pro", "blockrun/deepseek/deepseek-chat"]
       }
     }
   }
@@ -185,6 +189,7 @@ openclaw gateway logs | grep "ClawRouter"
 ```
 
 **Success indicators:**
+
 - ✅ "Rate limit reached" or "Quota exceeded" → primary failed
 - ✅ "Trying fallback: blockrun/auto" → failover triggered
 - ✅ "ClawRouter: Success with model" → failover succeeded
@@ -196,6 +201,7 @@ openclaw gateway logs | grep "ClawRouter"
 **Symptoms:** Always uses primary, never switches to ClawRouter
 
 **Solutions:**
+
 1. Check fallbacks are configured:
    ```bash
    openclaw models show
@@ -208,6 +214,7 @@ openclaw gateway logs | grep "ClawRouter"
 **Symptoms:** Failover triggers but ClawRouter returns balance errors
 
 **Solutions:**
+
 1. Check ClawRouter wallet balance:
    ```bash
    openclaw gateway logs | grep "Balance:"
@@ -222,6 +229,7 @@ openclaw gateway logs | grep "ClawRouter"
 **Cause:** OpenClaw tries multiple auth profiles before failover
 
 **Solutions:**
+
 1. Reduce auth profile retry attempts (see OpenClaw config)
 2. Use `blockrun/auto` as primary for faster responses
 3. Accept the latency as a tradeoff for cheaper requests
@@ -231,14 +239,17 @@ openclaw gateway logs | grep "ClawRouter"
 ### Example Scenario
 
 **Usage pattern:**
+
 - 100 requests/day
 - 50% hit Claude subscription quota (rate limited)
 - 50% use ClawRouter failover
 
 **Without failover:**
+
 - Pay Anthropic API: $50/month (100% API usage)
 
 **With failover:**
+
 - Claude subscription: $20/month (covers 50%)
 - ClawRouter x402: ~$5/month (50 requests via smart routing)
 - **Total: $25/month (50% savings)**
@@ -246,11 +257,13 @@ openclaw gateway logs | grep "ClawRouter"
 ### When Does This Make Sense?
 
 ✅ **Good fit:**
+
 - You already have a subscription for personal use
 - You occasionally exceed quota/rate limits
 - You want cost optimization without managing API keys
 
 ❌ **Not ideal:**
+
 - You need 100% reliability (subscriptions have rate limits)
 - You prefer a single provider (no failover complexity)
 - Your usage is low (< 10 requests/day)
@@ -262,6 +275,7 @@ openclaw gateway logs | grep "ClawRouter"
 **A:** You configure the subscription directly in OpenClaw using your own credentials. ClawRouter only receives requests after your subscription fails. This is similar to using multiple API keys yourself.
 
 However, each provider has different ToS. Check yours before proceeding:
+
 - [Claude Code Terms](https://claude.ai/terms)
 - [ChatGPT Terms](https://openai.com/policies/terms-of-use)
 
@@ -284,6 +298,7 @@ See: [Claude Max API Proxy Guide](https://github.com/anthropics/claude-code/blob
 ### Q: How is this different from PR #15?
 
 **A:** PR #15 integrated Claude CLI directly into ClawRouter. Our approach:
+
 - ✅ Works with any provider (not just Claude)
 - ✅ Respects provider ToS (no proxy/wrapper)
 - ✅ Uses OpenClaw's native failover (more reliable)
