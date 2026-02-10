@@ -53,6 +53,54 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 180_000; // 3 minutes (allows for on-chain tx
 const DEFAULT_PORT = 8402;
 const MAX_FALLBACK_ATTEMPTS = 3; // Maximum models to try in fallback chain
 const HEALTH_CHECK_TIMEOUT_MS = 2_000; // Timeout for checking existing proxy
+const RATE_LIMIT_COOLDOWN_MS = 60_000; // 60 seconds cooldown for rate-limited models
+
+/**
+ * Track rate-limited models to avoid hitting them again.
+ * Maps model ID to the timestamp when the rate limit was hit.
+ */
+const rateLimitedModels = new Map<string, number>();
+
+/**
+ * Check if a model is currently rate-limited (in cooldown period).
+ */
+function isRateLimited(modelId: string): boolean {
+  const hitTime = rateLimitedModels.get(modelId);
+  if (!hitTime) return false;
+
+  const elapsed = Date.now() - hitTime;
+  if (elapsed >= RATE_LIMIT_COOLDOWN_MS) {
+    rateLimitedModels.delete(modelId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Mark a model as rate-limited.
+ */
+function markRateLimited(modelId: string): void {
+  rateLimitedModels.set(modelId, Date.now());
+  console.log(`[ClawRouter] Model ${modelId} rate-limited, will deprioritize for 60s`);
+}
+
+/**
+ * Reorder models to put rate-limited ones at the end.
+ */
+function prioritizeNonRateLimited(models: string[]): string[] {
+  const available: string[] = [];
+  const rateLimited: string[] = [];
+
+  for (const model of models) {
+    if (isRateLimited(model)) {
+      rateLimited.push(model);
+    } else {
+      available.push(model);
+    }
+  }
+
+  return [...available, ...rateLimited];
+}
 // Extra buffer for balance check (on top of estimateAmount's 20% buffer)
 // Total effective buffer: 1.2 * 1.5 = 1.8x (80% safety margin)
 // This prevents x402 payment failures after streaming headers are sent,
@@ -1052,6 +1100,9 @@ async function proxyRequest(
 
       // Limit to MAX_FALLBACK_ATTEMPTS to prevent infinite loops
       modelsToTry = contextFiltered.slice(0, MAX_FALLBACK_ATTEMPTS);
+
+      // Deprioritize rate-limited models (put them at the end)
+      modelsToTry = prioritizeNonRateLimited(modelsToTry);
     } else {
       modelsToTry = modelId ? [modelId] : [];
     }
@@ -1094,6 +1145,10 @@ async function proxyRequest(
 
       // If it's a provider error and not the last attempt, try next model
       if (result.isProviderError && !isLastAttempt) {
+        // Track 429 rate limits to deprioritize this model for future requests
+        if (result.errorStatus === 429) {
+          markRateLimited(tryModel);
+        }
         console.log(
           `[ClawRouter] Provider error from ${tryModel}, trying fallback: ${result.errorBody?.slice(0, 100)}`,
         );
