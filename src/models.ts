@@ -47,6 +47,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   // NVIDIA (free)
   nvidia: "nvidia/gpt-oss-120b",
   "gpt-120b": "nvidia/gpt-oss-120b",
+  "gpt-20b": "nvidia/gpt-oss-20b",
   free: "nvidia/gpt-oss-120b",
 };
 
@@ -214,7 +215,15 @@ export const BLOCKRUN_MODELS: BlockRunModel[] = [
     maxOutput: 65536,
     reasoning: true,
   },
-  // o4-mini: Placeholder removed - model not yet released by OpenAI
+  {
+    id: "openai/o4-mini",
+    name: "o4-mini",
+    inputPrice: 1.1,
+    outputPrice: 4.4,
+    contextWindow: 128000,
+    maxOutput: 65536,
+    reasoning: true,
+  },
 
   // Anthropic - all Claude models excel at agentic workflows
   {
@@ -417,7 +426,15 @@ export const BLOCKRUN_MODELS: BlockRunModel[] = [
     inputPrice: 0,
     outputPrice: 0,
     contextWindow: 128000,
-    maxOutput: 8192,
+    maxOutput: 16384,
+  },
+  {
+    id: "nvidia/gpt-oss-20b",
+    name: "NVIDIA GPT-OSS 20B",
+    inputPrice: 0,
+    outputPrice: 0,
+    contextWindow: 128000,
+    maxOutput: 16384,
   },
   {
     id: "nvidia/kimi-k2.5",
@@ -425,7 +442,7 @@ export const BLOCKRUN_MODELS: BlockRunModel[] = [
     inputPrice: 0.001,
     outputPrice: 0.001,
     contextWindow: 262144,
-    maxOutput: 8192,
+    maxOutput: 16384,
   },
 ];
 
