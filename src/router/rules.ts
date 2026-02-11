@@ -54,20 +54,62 @@ function scoreKeywordMatch(
   return { name, score: scores.none, signal: null };
 }
 
+/**
+ * Multi-step pattern detection (English + Chinese).
+ * Conservative patterns to avoid false positives.
+ */
+const MULTI_STEP_PATTERNS: RegExp[] = [
+  // English
+  /first.*then/i,
+  /step\s+\d+/i,
+  /\d+[\.．]\s+/, // 1. 2. 1．2．
+  // Chinese: 第一步、第二步、第1步
+  /第[一二三四五六七八九十\d]+步/,
+  // Chinese: 步骤1、步骤一、步骤 1
+  /步骤\s*[一二三四五六七八九十\d]+/,
+  // Chinese: 首先...然后（限制中间长度≤80 避免跨段匹配）
+  /首先[\s\S]{1,80}然后/,
+  // Chinese: 第一、第二、第一，第二，
+  /第[一二三四五六七八九十\d]+[、,]\s*第[一二三四五六七八九十\d]+/,
+];
+
 function scoreMultiStep(text: string): DimensionScore {
-  const patterns = [/first.*then/i, /step \d/i, /\d\.\s/];
-  const hits = patterns.filter((p) => p.test(text));
+  const hits = MULTI_STEP_PATTERNS.filter((p) => p.test(text));
   if (hits.length > 0) {
     return { name: "multiStepPatterns", score: 0.5, signal: "multi-step" };
   }
   return { name: "multiStepPatterns", score: 0, signal: null };
 }
 
+/**
+ * Question complexity: count explicit question marks + Chinese multi-question phrases.
+ * - 半角 ? + 全角 ？
+ * - 无语符中文：2+ 个（怎么|如何|怎样）视为多问句
+ */
+const CHINESE_QUESTION_PHRASE = /怎么|如何|怎样/g;
+
 function scoreQuestionComplexity(prompt: string): DimensionScore {
-  const count = (prompt.match(/\?/g) || []).length;
-  if (count > 3) {
-    return { name: "questionComplexity", score: 0.5, signal: `${count} questions` };
+  const halfWidth = (prompt.match(/\?/g) || []).length;
+  const fullWidth = (prompt.match(/？/g) || []).length;
+  const questionCount = halfWidth + fullWidth;
+
+  if (questionCount > 3) {
+    return { name: "questionComplexity", score: 0.5, signal: `${questionCount} questions` };
   }
+
+  // 中文无语符多问：如「怎么X，又怎么Y」「如何A？如何B？」已由 ?/？ 覆盖；
+  // 仅当无显式问号且出现 2+ 次（怎么|如何|怎样）时补充计为多问
+  if (questionCount === 0) {
+    const phraseMatches = prompt.match(CHINESE_QUESTION_PHRASE) || [];
+    if (phraseMatches.length >= 2) {
+      return {
+        name: "questionComplexity",
+        score: 0.5,
+        signal: `multi-question (${phraseMatches.length} 怎么/如何/怎样)`,
+      };
+    }
+  }
+
   return { name: "questionComplexity", score: 0, signal: null };
 }
 
