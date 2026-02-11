@@ -137,21 +137,12 @@ export class ScoreCache {
     if (!newTier || !cached.result.tier) return false;
     if (cached.result.tier === newTier) return false; // Same tier, no need
 
-    // If new score is within fuzzy boundary of the boundary, use cached
+    // If new score is within fuzzy boundary of the boundary, use cached for stability
     const fuzzyRange = this.config.fuzzyBoundaryWidth;
     if (cached.distanceToBoundary < fuzzyRange) {
-      // We're near a boundary - check if new score crosses it
-      const boundaryCrossed = this.checkBoundaryCrossed(
-        cached.distanceToBoundary,
-        cached.result.tier,
-        newTier,
-        newScore,
-      );
-
-      if (!boundaryCrossed) {
-        // Score moved but didn't cross boundary - use cached for stability
-        return true;
-      }
+      // We're near a boundary - stay with current tier for stability
+      // even if new calculation suggests a different tier
+      return true;
     }
 
     return false;

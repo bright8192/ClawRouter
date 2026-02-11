@@ -175,7 +175,7 @@ export class SessionStore {
 
       // Update context
       if (context) {
-        this.updateContext(existing, context);
+        this.updateEntryContext(existing, context);
       }
 
       // Track request timestamp
@@ -299,21 +299,23 @@ export class SessionStore {
     const tierModels = this.getTierModels(currentTier);
     const stableModel = healthTracker.getBestModel(currentTier, tierModels);
 
-    if (stableModel && stableModel !== currentModel) {
-      // Save original
-      entry.degradation = {
-        isDegraded: true,
-        originalModel: currentModel,
-        originalTier: currentTier,
-        reason,
-        degradedAt: Date.now(),
-        recoveryRequests: 0,
-      };
+    // Mark as degraded regardless of whether we can find an alternative model
+    // This allows monitoring and recovery tracking even without fallback
+    entry.degradation = {
+      isDegraded: true,
+      originalModel: currentModel,
+      originalTier: currentTier,
+      reason,
+      degradedAt: Date.now(),
+      recoveryRequests: 0,
+    };
 
-      // Switch to stable model
+    // Switch to stable model if available
+    if (stableModel && stableModel !== currentModel) {
       entry.model = stableModel;
-      entry.metrics.consecutiveFailures = 0;
     }
+
+    entry.metrics.consecutiveFailures = 0;
   }
 
   /**
@@ -345,47 +347,6 @@ export class SessionStore {
     // This would ideally query the routing config
     // For now, return empty array to trigger fallback logic elsewhere
     return [];
-  }
-
-  /**
-   * Update context snapshot incrementally.
-   */
-  private updateContext(entry: SessionEntry, context: Partial<SessionContextSnapshot>): void {
-    const snapshot = entry.contextSnapshot;
-
-    if (context.topics) {
-      // Merge topics, keep unique
-      snapshot.topics = [...new Set([...snapshot.topics, ...context.topics])].slice(0, 10);
-    }
-    if (context.intent) {
-      snapshot.intent = context.intent;
-    }
-    if (context.complexityTrend !== undefined) {
-      // Moving average of complexity
-      snapshot.complexityTrend = 0.7 * snapshot.complexityTrend + 0.3 * context.complexityTrend;
-    }
-    if (context.hasUsedTools !== undefined) {
-      snapshot.hasUsedTools = snapshot.hasUsedTools || context.hasUsedTools;
-    }
-    if (context.lastToolSequence) {
-      snapshot.lastToolSequence = context.lastToolSequence;
-    }
-    if (context.avgResponseLength !== undefined) {
-      snapshot.avgResponseLength =
-        0.7 * snapshot.avgResponseLength + 0.3 * context.avgResponseLength;
-    }
-  }
-
-  /**
-   * Update context for an existing session.
-   */
-  updateContext(sessionId: string, context: Partial<SessionContextSnapshot>): void {
-    if (!this.config.enabled || !sessionId) return;
-
-    const entry = this.sessions.get(sessionId);
-    if (entry) {
-      this.updateContext(entry, context);
-    }
   }
 
   /**
@@ -479,10 +440,44 @@ export class SessionStore {
   }
 
   /**
-   * Get detailed session info.
+   * Update context snapshot incrementally.
    */
-  getSessionDetails(sessionId: string): SessionEntry | undefined {
-    return this.sessions.get(sessionId);
+  private updateEntryContext(entry: SessionEntry, context: Partial<SessionContextSnapshot>): void {
+    const snapshot = entry.contextSnapshot;
+
+    if (context.topics) {
+      // Merge topics, keep unique
+      snapshot.topics = [...new Set([...snapshot.topics, ...context.topics])].slice(0, 10);
+    }
+    if (context.intent) {
+      snapshot.intent = context.intent;
+    }
+    if (context.complexityTrend !== undefined) {
+      // Moving average of complexity
+      snapshot.complexityTrend = 0.7 * snapshot.complexityTrend + 0.3 * context.complexityTrend;
+    }
+    if (context.hasUsedTools !== undefined) {
+      snapshot.hasUsedTools = snapshot.hasUsedTools || context.hasUsedTools;
+    }
+    if (context.lastToolSequence) {
+      snapshot.lastToolSequence = context.lastToolSequence;
+    }
+    if (context.avgResponseLength !== undefined) {
+      snapshot.avgResponseLength =
+        0.7 * snapshot.avgResponseLength + 0.3 * context.avgResponseLength;
+    }
+  }
+
+  /**
+   * Update context for an existing session.
+   */
+  updateSessionContext(sessionId: string, context: Partial<SessionContextSnapshot>): void {
+    if (!this.config.enabled || !sessionId) return;
+
+    const entry = this.sessions.get(sessionId);
+    if (entry) {
+      this.updateEntryContext(entry, context);
+    }
   }
 
   /**

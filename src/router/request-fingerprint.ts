@@ -40,16 +40,16 @@ function extractFeatures(text: string): string[] {
 
   for (const pattern of codePatterns) {
     if (pattern.test(text)) {
-      features.push('CODE');
+      features.push("CODE");
       break;
     }
   }
 
   // Reasoning indicators
-  const reasoningWords = ['step', 'prove', 'explain', 'why', 'how', '分析', '证明', '解释', '步骤'];
+  const reasoningWords = ["step", "prove", "explain", "why", "how", "分析", "证明", "解释", "步骤"];
   for (const word of reasoningWords) {
     if (lower.includes(word)) {
-      features.push('REASONING');
+      features.push("REASONING");
       break;
     }
   }
@@ -64,7 +64,7 @@ function extractFeatures(text: string): string[] {
 
   for (const pattern of multiStepPatterns) {
     if (pattern.test(text)) {
-      features.push('MULTISTEP');
+      features.push("MULTISTEP");
       break;
     }
   }
@@ -77,10 +77,10 @@ function extractFeatures(text: string): string[] {
 
   // Length category (preserves complexity signal)
   const tokenEstimate = Math.ceil(text.length / 4);
-  if (tokenEstimate < 50) features.push('SHORT');
-  else if (tokenEstimate < 200) features.push('MEDIUM');
-  else if (tokenEstimate < 1000) features.push('LONG');
-  else features.push('XLONG');
+  if (tokenEstimate < 50) features.push("SHORT");
+  else if (tokenEstimate < 200) features.push("MEDIUM");
+  else if (tokenEstimate < 1000) features.push("LONG");
+  else features.push("XLONG");
 
   return features;
 }
@@ -89,21 +89,37 @@ function extractFeatures(text: string): string[] {
  * Normalize text for fingerprinting
  */
 function normalize(text: string): string {
-  return text
-    .replace(NORMALIZATION_PATTERNS.whitespace, ' ')
-    .replace(NORMALIZATION_PATTERNS.quotes, '"')
-    .replace(NORMALIZATION_PATTERNS.decorativePunct, ' ')
-    .replace(NORMALIZATION_PATTERNS.chinesePunct, (match) => {
-      const map: Record<string, string> = {
-        '，': ',', '。': '.', '！': '!', '？': '?',
-        '；': ';', '：': ':', '"': '"', '"': '"',
-        ''': "'", ''': "'", '（': '(', '）': ')',
-        '【': '[', '】': ']',
-      };
-      return map[match] || ' ';
-    })
-    .trim()
-    .toLowerCase();
+  return (
+    text
+      // First pass: normalize whitespace
+      .replace(NORMALIZATION_PATTERNS.whitespace, " ")
+      // Second pass: remove/replace punctuation
+      .replace(NORMALIZATION_PATTERNS.quotes, '"')
+      .replace(NORMALIZATION_PATTERNS.decorativePunct, " ")
+      .replace(NORMALIZATION_PATTERNS.chinesePunct, (match) => {
+        const map: Record<string, string> = {
+          "，": ",",
+          "。": ".",
+          "！": "!",
+          "？": "?",
+          "；": ";",
+          "：": ":",
+          "“": '"',
+          "”": '"',
+          "‘": "'",
+          "’": "'",
+          "（": "(",
+          "）": ")",
+          "【": "[",
+          "】": "]",
+        };
+        return map[match] || " ";
+      })
+      // Final pass: collapse multiple spaces into one
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase()
+  );
 }
 
 /**
@@ -115,24 +131,21 @@ function contentHash(text: string): string {
   if (normalized.length <= 150) {
     return normalized;
   }
-  return normalized.slice(0, 100) + '...' + normalized.slice(-50);
+  return normalized.slice(0, 100) + "..." + normalized.slice(-50);
 }
 
 /**
  * Generate a stable fingerprint for a request
  * Combines structural features with content hash
  */
-export function generateFingerprint(
-  prompt: string,
-  systemPrompt: string | undefined,
-): string {
+export function generateFingerprint(prompt: string, systemPrompt: string | undefined): string {
   const features = extractFeatures(prompt);
   const content = contentHash(prompt);
-  const sysHash = systemPrompt ? contentHash(systemPrompt).slice(0, 50) : 'none';
+  const sysHash = systemPrompt ? contentHash(systemPrompt).slice(0, 50) : "none";
 
   // Feature prefix ensures structurally different prompts get different fingerprints
   // even if content happens to hash similarly
-  return `${features.sort().join('|')}|${content}|${sysHash}`;
+  return `${features.sort().join("|")}|${content}|${sysHash}`;
 }
 
 /**
@@ -140,19 +153,27 @@ export function generateFingerprint(
  * Used for cache hit detection with tolerance
  */
 export function fingerprintsSimilar(fp1: string, fp2: string): boolean {
-  const [features1, content1] = fp1.split('|', 2);
-  const [features2, content2] = fp2.split('|', 2);
+  const [features1, content1] = fp1.split("|", 2);
+  const [features2, content2] = fp2.split("|", 2);
 
-  // Must have same structural features
-  if (features1 !== features2) return false;
+  // Features should be similar - check if they share most features
+  const features1Set = new Set(features1.split(","));
+  const features2Set = new Set(features2.split(","));
+  const commonFeatures = [...features1Set].filter((f) => features2Set.has(f));
+  const totalFeatures = new Set([...features1Set, ...features2Set]).size;
+
+  // Allow up to 1 feature difference
+  if (totalFeatures > 0 && commonFeatures.length < totalFeatures - 1) {
+    return false;
+  }
 
   // Content must be very similar (allow small differences)
   if (content1 === content2) return true;
 
-  // Allow 10% character difference for minor edits
+  // Allow 20% character difference for minor edits (punctuation, small changes)
   const maxLen = Math.max(content1.length, content2.length);
   const minLen = Math.min(content1.length, content2.length);
-  if (minLen / maxLen < 0.9) return false;
+  if (minLen / maxLen < 0.8) return false;
 
   // Count differing characters
   let diffCount = 0;
@@ -162,15 +183,12 @@ export function fingerprintsSimilar(fp1: string, fp2: string): boolean {
   }
   diffCount += Math.abs(content1.length - content2.length);
 
-  return diffCount / maxLen < 0.1;
+  return diffCount / maxLen < 0.2;
 }
 
 /**
  * Calculate fingerprint for cache key (faster, less strict)
  */
-export function getCacheKey(
-  prompt: string,
-  systemPrompt: string | undefined,
-): string {
+export function getCacheKey(prompt: string, systemPrompt: string | undefined): string {
   return generateFingerprint(prompt, systemPrompt);
 }

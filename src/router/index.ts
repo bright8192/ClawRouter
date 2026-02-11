@@ -190,12 +190,15 @@ export function route(
   let healthOverride = false;
   if (enableHealthTracking) {
     const healthTracker = getModelHealthTracker();
-    const tierModels = Object.values(tierConfigs[tier] || {});
-    const bestModel = healthTracker.getBestModel(tier, tierModels);
+    const tierConfig = tierConfigs[tier];
+    if (tierConfig) {
+      const tierModels = [tierConfig.primary, ...tierConfig.fallback];
+      const bestModel = healthTracker.getBestModel(tier, tierModels);
 
-    if (bestModel && bestModel !== tierConfigs[tier]?.primary) {
-      reasoning += ` | health-override`;
-      healthOverride = true;
+      if (bestModel && bestModel !== tierConfig.primary) {
+        reasoning += ` | health-override`;
+        healthOverride = true;
+      }
     }
   }
 
