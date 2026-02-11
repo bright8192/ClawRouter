@@ -1,14 +1,89 @@
 /**
- * Rule-Based Classifier (v2 — Weighted Scoring)
+ * Rule-Based Classifier (v2 — Weighted Scoring with Hysteresis)
  *
  * Scores a request across 14 weighted dimensions and maps the aggregate
- * score to a tier using configurable boundaries. Confidence is calibrated
- * via sigmoid — low confidence triggers the fallback classifier.
+ * score to a tier using configurable boundaries with hysteresis to prevent
+ * jitter. Confidence is calibrated via sigmoid — low confidence triggers
+ * the fallback classifier.
+ *
+ * Features:
+ * - Hysteresis boundaries to prevent tier oscillation
+ * - Fuzzy boundary regions for stability
+ * - Score history tracking for consistent decisions
  *
  * Handles 70-80% of requests in < 1ms with zero cost.
  */
 
 import type { Tier, ScoringResult, ScoringConfig } from "./types.js";
+
+// ─── Hysteresis State ───
+// Track last decisions to enable hysteresis (stateful tier transitions)
+
+type ScoreHistory = {
+  lastScore: number;
+  lastTier: Tier | null;
+  consecutiveSameTier: number;
+  lastBoundary: string;
+};
+
+const scoreHistory: Map<string, ScoreHistory> = new Map();
+const HISTORY_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get or create score history for a request fingerprint
+ */
+function getScoreHistory(fingerprint: string): ScoreHistory {
+  return (
+    scoreHistory.get(fingerprint) ?? {
+      lastScore: 0,
+      lastTier: null,
+      consecutiveSameTier: 0,
+      lastBoundary: "",
+    }
+  );
+}
+
+/**
+ * Update score history after decision
+ */
+function updateScoreHistory(
+  fingerprint: string,
+  score: number,
+  tier: Tier | null,
+  boundary: string,
+): void {
+  const existing = scoreHistory.get(fingerprint);
+  const consecutive = existing?.lastTier === tier ? (existing?.consecutiveSameTier ?? 0) + 1 : 1;
+
+  scoreHistory.set(fingerprint, {
+    lastScore: score,
+    lastTier: tier,
+    consecutiveSameTier: consecutive,
+    lastBoundary: boundary,
+  });
+
+  // Cleanup old entries periodically
+  if (Math.random() < 0.01) {
+    // 1% chance per call
+    cleanupScoreHistory();
+  }
+}
+
+/**
+ * Remove expired history entries
+ */
+function cleanupScoreHistory(): void {
+  const now = Date.now();
+  // Note: We don't have timestamps in ScoreHistory, rely on LRU in practice
+  // or implement proper TTL if needed
+  if (scoreHistory.size > 1000) {
+    // Simple eviction when too large
+    const entriesToDelete = Array.from(scoreHistory.keys()).slice(0, scoreHistory.size - 1000);
+    for (const key of entriesToDelete) {
+      scoreHistory.delete(key);
+    }
+  }
+}
 
 type DimensionScore = { name: string; score: number; signal: string | null };
 
@@ -174,6 +249,112 @@ function scoreAgenticTask(
   };
 }
 
+// ─── Fuzzy Boundaries with Hysteresis ───
+
+/**
+ * Calculate tier using hysteresis to prevent oscillation.
+ *
+ * Standard boundaries: simpleMedium, mediumComplex, complexReasoning
+ * With hysteresis:
+ *   - Moving up (score increasing): use higher boundary
+ *   - Moving down (score decreasing): use lower boundary
+ *   - Fuzzy region (±0.05): stick with current tier
+ */
+function calculateTierWithHysteresis(
+  score: number,
+  boundaries: { simpleMedium: number; mediumComplex: number; complexReasoning: number },
+  history: ScoreHistory,
+  fuzzyWidth: number = 0.05,
+): { tier: Tier | null; distance: number; boundary: string; usedHysteresis: boolean } {
+  const { simpleMedium, mediumComplex, complexReasoning } = boundaries;
+
+  // Define all boundaries with their fuzzy regions
+  const tiers = [
+    { name: "SIMPLE" as Tier, upper: simpleMedium },
+    { name: "MEDIUM" as Tier, upper: mediumComplex },
+    { name: "COMPLEX" as Tier, upper: complexReasoning },
+    { name: "REASONING" as Tier, upper: Infinity },
+  ];
+
+  // Find current tier without hysteresis
+  let currentTier: Tier | null = null;
+  let currentDistance = 0;
+  let nearestBoundary = "";
+
+  if (score < simpleMedium) {
+    currentTier = "SIMPLE";
+    currentDistance = simpleMedium - score;
+    nearestBoundary = "simple-medium";
+  } else if (score < mediumComplex) {
+    currentTier = "MEDIUM";
+    currentDistance = Math.min(score - simpleMedium, mediumComplex - score);
+    nearestBoundary =
+      score < (simpleMedium + mediumComplex) / 2 ? "simple-medium" : "medium-complex";
+  } else if (score < complexReasoning) {
+    currentTier = "COMPLEX";
+    currentDistance = Math.min(score - mediumComplex, complexReasoning - score);
+    nearestBoundary =
+      score < (mediumComplex + complexReasoning) / 2 ? "medium-complex" : "complex-reasoning";
+  } else {
+    currentTier = "REASONING";
+    currentDistance = score - complexReasoning;
+    nearestBoundary = "complex-reasoning";
+  }
+
+  // Apply hysteresis if we have history
+  if (history.lastTier !== null && currentTier !== history.lastTier) {
+    const tierIndex = tiers.findIndex((t) => t.name === currentTier);
+    const lastTierIndex = tiers.findIndex((t) => t.name === history.lastTier);
+
+    // Check if in fuzzy boundary region
+    const isInFuzzyRegion = currentDistance < fuzzyWidth;
+
+    if (isInFuzzyRegion) {
+      // In fuzzy region: stick with previous tier for stability
+      return {
+        tier: history.lastTier,
+        distance: 0.05, // Minimum distance for confidence
+        boundary: nearestBoundary,
+        usedHysteresis: true,
+      };
+    }
+
+    // Direction matters for hysteresis
+    const movingUp = tierIndex > lastTierIndex;
+
+    if (movingUp) {
+      // Moving to higher tier: need to exceed boundary + fuzzy margin
+      const requiredDistance = fuzzyWidth;
+      if (currentDistance < requiredDistance) {
+        return {
+          tier: history.lastTier,
+          distance: currentDistance,
+          boundary: nearestBoundary,
+          usedHysteresis: true,
+        };
+      }
+    } else {
+      // Moving to lower tier: need to be below boundary - fuzzy margin
+      const requiredDistance = fuzzyWidth;
+      if (currentDistance < requiredDistance) {
+        return {
+          tier: history.lastTier,
+          distance: currentDistance,
+          boundary: nearestBoundary,
+          usedHysteresis: true,
+        };
+      }
+    }
+  }
+
+  return {
+    tier: currentTier,
+    distance: currentDistance,
+    boundary: nearestBoundary,
+    usedHysteresis: false,
+  };
+}
+
 // ─── Main Classifier ───
 
 export function classifyByRules(
@@ -181,6 +362,7 @@ export function classifyByRules(
   systemPrompt: string | undefined,
   estimatedTokens: number,
   config: ScoringConfig,
+  fingerprint?: string, // Optional fingerprint for history tracking
 ): ScoringResult {
   const text = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
   // User prompt only — used for reasoning markers (system prompt shouldn't influence complexity)
@@ -313,39 +495,49 @@ export function classifyByRules(
       Math.max(weightedScore, 0.3), // ensure positive for confidence calc
       config.confidenceSteepness,
     );
+
+    // Update history if fingerprint provided
+    if (fingerprint) {
+      updateScoreHistory(fingerprint, weightedScore, "REASONING", "reasoning-override");
+    }
+
     return {
       score: weightedScore,
       tier: "REASONING",
       confidence: Math.max(confidence, 0.85),
-      signals,
+      signals: [...signals, "reasoning-override"],
       agenticScore,
     };
   }
 
-  // Map weighted score to tier using boundaries
-  const { simpleMedium, mediumComplex, complexReasoning } = config.tierBoundaries;
-  let tier: Tier;
-  let distanceFromBoundary: number;
+  // Calculate tier using hysteresis to prevent oscillation
+  const history = fingerprint
+    ? getScoreHistory(fingerprint)
+    : { lastTier: null, lastScore: 0, consecutiveSameTier: 0, lastBoundary: "" };
+  const {
+    tier,
+    distance: distanceFromBoundary,
+    boundary,
+    usedHysteresis,
+  } = calculateTierWithHysteresis(
+    weightedScore,
+    config.tierBoundaries,
+    history,
+    0.05, // fuzzy width
+  );
 
-  if (weightedScore < simpleMedium) {
-    tier = "SIMPLE";
-    distanceFromBoundary = simpleMedium - weightedScore;
-  } else if (weightedScore < mediumComplex) {
-    tier = "MEDIUM";
-    distanceFromBoundary = Math.min(weightedScore - simpleMedium, mediumComplex - weightedScore);
-  } else if (weightedScore < complexReasoning) {
-    tier = "COMPLEX";
-    distanceFromBoundary = Math.min(
-      weightedScore - mediumComplex,
-      complexReasoning - weightedScore,
-    );
-  } else {
-    tier = "REASONING";
-    distanceFromBoundary = weightedScore - complexReasoning;
+  // Add hysteresis signal if applied
+  if (usedHysteresis) {
+    signals.push(`hysteresis (${history.lastTier} → stable)`);
   }
 
   // Calibrate confidence via sigmoid of distance from nearest boundary
   const confidence = calibrateConfidence(distanceFromBoundary, config.confidenceSteepness);
+
+  // Update history
+  if (fingerprint) {
+    updateScoreHistory(fingerprint, weightedScore, tier, boundary);
+  }
 
   // If confidence is below threshold → ambiguous
   if (confidence < config.confidenceThreshold) {
